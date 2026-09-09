@@ -12,7 +12,9 @@ public enum NetworkManagerFactory {
         hostResolver: @escaping @Sendable (APIHost) -> URL,
         authManager: AuthManagerProtocol? = nil,
         customInterceptors: [RequestInterceptor] = [],
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        encoder: JSONEncoder = JSONEncoder(),
+        decoder: JSONDecoder = JSONDecoder()
     ) -> NetworkManagerProtocol {
 
         var interceptors: [RequestInterceptor] = []
@@ -26,7 +28,9 @@ public enum NetworkManagerFactory {
         return NetworkManager(
             hostResolver: hostResolver,
             session: session,
-            pipeline: InterceptorPipeline(interceptors: interceptors)
+            pipeline: InterceptorPipeline(interceptors: interceptors),
+            encoder: encoder,
+            decoder: decoder
         )
     }
 }

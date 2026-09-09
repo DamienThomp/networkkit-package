@@ -11,6 +11,7 @@ public enum NetworkError: Error, LocalizedError, Sendable {
     case invalidUrl
     case taskCancelled
     case serverError(statusCode: Int, data: Data, response: HTTPURLResponse)
+    case emptyResponse
     case decodingError(Error)
     case encodingError(Error)
     case transportError(URLError)
@@ -24,6 +25,8 @@ public enum NetworkError: Error, LocalizedError, Sendable {
             return "The network task was cancelled."
         case .serverError(let code, _, _):
             return "Server responded with status code \(code)."
+        case .emptyResponse:
+            return "The response body was empty but a decodable response was expected."
         case .decodingError(let error):
             return "Failed to decode response: \(error.localizedDescription)"
         case .encodingError(let error):
