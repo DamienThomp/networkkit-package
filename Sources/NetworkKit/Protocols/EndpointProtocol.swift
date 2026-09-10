@@ -16,8 +16,21 @@ public enum HTTPMethod: String, Sendable {
     case patch = "PATCH"
 }
 
-public enum ContentType: String, Sendable {
-    case applicationJson = "application/json"
+public struct ContentType: Hashable, Sendable, ExpressibleByStringLiteral, RawRepresentable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: String) {
+        self.rawValue = value
+    }
+
+    public static let json: ContentType = "application/json"
+    public static let protobuf: ContentType = "application/x-protobuf"
+    public static let octetStream: ContentType = "application/octet-stream"
+    public static let formURLEncoded: ContentType = "application/x-www-form-urlencoded"
 }
 
 public protocol EndpointProtocol: Sendable {
@@ -28,6 +41,7 @@ public protocol EndpointProtocol: Sendable {
     var httpMethod: HTTPMethod { get }
     var contentType: ContentType? { get }
     var headers: [String: String]? { get }
+    var rawBody: Data? { get }
     var body: (any Encodable & Sendable)? { get }
     var queryItems: [URLQueryItem]? { get }
     var cachePolicy: URLRequest.CachePolicy { get }
@@ -35,8 +49,9 @@ public protocol EndpointProtocol: Sendable {
 
 public extension EndpointProtocol {
     var host: APIHost { .default }
-    var contentType: ContentType? { .applicationJson }
+    var contentType: ContentType? { .json }
     var headers: [String: String]? { nil }
+    var rawBody: Data? { nil }
     var body: (any Encodable & Sendable)? { nil }
     var queryItems: [URLQueryItem]? { nil }
     var cachePolicy: URLRequest.CachePolicy { .useProtocolCachePolicy }

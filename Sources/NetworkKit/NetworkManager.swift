@@ -14,6 +14,7 @@ public final class NetworkManager: NetworkManagerProtocol {
     private let pipeline: InterceptorPipelineProtocol
     private let maxRetryCount: Int
     private let validResponseCodes = 200...299
+    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(
@@ -21,17 +22,35 @@ public final class NetworkManager: NetworkManagerProtocol {
         session: URLSession = .shared,
         pipeline: InterceptorPipelineProtocol = InterceptorPipeline(),
         maxRetryCount: Int = 1,
+        encoder: JSONEncoder = JSONEncoder(),
         decoder: JSONDecoder = JSONDecoder()
     ) {
         self.hostResolver = hostResolver
         self.session = session
         self.pipeline = pipeline
         self.maxRetryCount = maxRetryCount
+        self.encoder = encoder
         self.decoder = decoder
     }
 
     public func request<E: EndpointProtocol>(for endpoint: E) async throws -> E.Response {
         let data = try await requestData(for: endpoint)
+        return try decodeResponse(data, as: E.self)
+    }
+
+    public func requestData<E: EndpointProtocol>(for endpoint: E) async throws -> Data {
+        return try await execute(endpoint: endpoint, attempt: 0)
+    }
+
+    // MARK: - Response decoding
+
+    private func decodeResponse<E: EndpointProtocol>(_ data: Data, as type: E.Type) throws -> E.Response {
+        if data.isEmpty {
+            if let empty = EmptyResponse() as? E.Response {
+                return empty
+            }
+            throw NetworkError.emptyResponse
+        }
         do {
             return try decoder.decode(E.Response.self, from: data)
         } catch {
@@ -39,9 +58,7 @@ public final class NetworkManager: NetworkManagerProtocol {
         }
     }
 
-    public func requestData<E: EndpointProtocol>(for endpoint: E) async throws -> Data {
-        return try await execute(endpoint: endpoint, attempt: 0)
-    }
+    // MARK: - Request execution
 
     private func execute<E: EndpointProtocol>(endpoint: E, attempt: Int) async throws -> Data {
         try Task.checkCancellation()
@@ -49,6 +66,17 @@ public final class NetworkManager: NetworkManagerProtocol {
         var request = try buildRequest(from: endpoint)
         try await pipeline.adapt(&request)
 
+        let (data, httpResponse) = try await performDataTask(for: request)
+        return try await handleHTTPResponse(
+            data: data,
+            response: httpResponse,
+            request: request,
+            endpoint: endpoint,
+            attempt: attempt
+        )
+    }
+
+    private func performDataTask(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let data: Data
         let response: URLResponse
 
@@ -69,13 +97,23 @@ public final class NetworkManager: NetworkManagerProtocol {
             )
         }
 
-        if validResponseCodes.contains(httpResponse.statusCode) {
+        return (data, httpResponse)
+    }
+
+    private func handleHTTPResponse<E: EndpointProtocol>(
+        data: Data,
+        response: HTTPURLResponse,
+        request: URLRequest,
+        endpoint: E,
+        attempt: Int
+    ) async throws -> Data {
+        if validResponseCodes.contains(response.statusCode) {
             return data
         }
 
         let shouldRetry = try await pipeline.shouldRetry(
             request,
-            response: httpResponse,
+            response: response,
             data: data,
             attempt: attempt,
             maxRetries: maxRetryCount
@@ -86,13 +124,24 @@ public final class NetworkManager: NetworkManagerProtocol {
         }
 
         throw NetworkError.serverError(
-            statusCode: httpResponse.statusCode,
+            statusCode: response.statusCode,
             data: data,
-            response: httpResponse
+            response: response
         )
     }
 
+    // MARK: - Request building
+
     private func buildRequest<E: EndpointProtocol>(from endpoint: E) throws -> URLRequest {
+        var request = URLRequest(url: try buildURL(from: endpoint))
+        request.httpMethod = endpoint.httpMethod.rawValue
+        request.cachePolicy = endpoint.cachePolicy
+        try applyBody(to: &request, from: endpoint)
+        applyHeaders(to: &request, from: endpoint)
+        return request
+    }
+
+    private func buildURL<E: EndpointProtocol>(from endpoint: E) throws -> URL {
         let baseURL = hostResolver(endpoint.host)
 
         let fullURL = endpoint.path.isEmpty
@@ -111,24 +160,28 @@ public final class NetworkManager: NetworkManagerProtocol {
             throw NetworkError.invalidUrl
         }
 
-        var request = URLRequest(url: finalURL)
-        request.httpMethod = endpoint.httpMethod.rawValue
-        request.cachePolicy = endpoint.cachePolicy
+        return finalURL
+    }
 
-        if let contentType = endpoint.contentType {
-            request.setValue(contentType.rawValue, forHTTPHeaderField: "Content-Type")
-        }
+    private func applyBody<E: EndpointProtocol>(to request: inout URLRequest, from endpoint: E) throws {
+        let hasBody = endpoint.rawBody != nil || endpoint.body != nil
 
-        if let body = endpoint.body {
+        if let rawBody = endpoint.rawBody {
+            request.httpBody = rawBody
+        } else if let body = endpoint.body {
             do {
-                request.httpBody = try JSONEncoder().encode(body)
+                request.httpBody = try encoder.encode(body)
             } catch {
                 throw NetworkError.encodingError(error)
             }
         }
 
-        endpoint.headers?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        if hasBody, let contentType = endpoint.contentType {
+            request.setValue(contentType.rawValue, forHTTPHeaderField: "Content-Type")
+        }
+    }
 
-        return request
+    private func applyHeaders<E: EndpointProtocol>(to request: inout URLRequest, from endpoint: E) {
+        endpoint.headers?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
     }
 }
