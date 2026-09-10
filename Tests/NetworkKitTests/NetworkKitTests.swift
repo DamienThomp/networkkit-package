@@ -81,21 +81,48 @@ private struct SnakeCaseEndpoint: EndpointProtocol {
 private actor MockAuthManager: AuthManagerProtocol {
     private(set) var refreshCount = 0
     private var shouldFailRefresh = false
-
-    var accessToken: String? {
-        "test-token"
-    }
+    var credential: AuthCredential? = .bearer("test-token")
 
     func setShouldFailRefresh(_ value: Bool) {
         shouldFailRefresh = value
     }
 
-    func refreshAccessToken() async throws {
+    func refreshCredentials() async throws {
         refreshCount += 1
         try await Task.sleep(for: .milliseconds(25))
         if shouldFailRefresh {
             throw URLError(.userAuthenticationRequired)
         }
+    }
+}
+
+private struct StaticCredentialAuthManager: AuthManagerProtocol {
+    let storedCredential: AuthCredential?
+
+    var credential: AuthCredential? {
+        get async { storedCredential }
+    }
+
+    func refreshCredentials() async throws {}
+
+    func shouldRefresh(for response: HTTPURLResponse) -> Bool {
+        false
+    }
+}
+
+private actor CustomRefreshAuthManager: AuthManagerProtocol {
+    private(set) var refreshCount = 0
+
+    var credential: AuthCredential? {
+        get async { .bearer("test-token") }
+    }
+
+    func refreshCredentials() async throws {
+        refreshCount += 1
+    }
+
+    nonisolated func shouldRefresh(for response: HTTPURLResponse) -> Bool {
+        response.statusCode == 403
     }
 }
 
@@ -317,6 +344,78 @@ struct NetworkKitTestSuite {
     let captured = CapturingInterceptor.lastRequest
     #expect(captured?.httpBody != nil)
     #expect(captured?.value(forHTTPHeaderField: "Content-Type") == ContentType.json.rawValue)
+}
+
+@Test func authInterceptorAppliesDiscogsTokenCredential() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    setHandler { request in
+        (TestSupport.httpResponse(for: request, statusCode: 204), Data())
+    }
+
+    let authManager = StaticCredentialAuthManager(
+        storedCredential: .token(scheme: "Discogs", token: "my-discogs-token")
+    )
+    let manager = TestSupport.makeManager(
+        authManager: authManager,
+        customInterceptors: [CapturingInterceptor()]
+    )
+
+    _ = try await manager.requestData(for: DefaultGetEndpoint(path: "releases/1"))
+
+    let captured = CapturingInterceptor.lastRequest
+    #expect(captured?.value(forHTTPHeaderField: "Authorization") == "Discogs token=my-discogs-token")
+}
+
+@Test func authInterceptorAppliesCustomHeaderCredential() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    setHandler { request in
+        (TestSupport.httpResponse(for: request, statusCode: 204), Data())
+    }
+
+    let authManager = StaticCredentialAuthManager(
+        storedCredential: .header(field: "X-API-Key", value: "secret-key")
+    )
+    let manager = TestSupport.makeManager(
+        authManager: authManager,
+        customInterceptors: [CapturingInterceptor()]
+    )
+
+    _ = try await manager.requestData(for: DefaultGetEndpoint(path: "resource"))
+
+    let captured = CapturingInterceptor.lastRequest
+    #expect(captured?.value(forHTTPHeaderField: "X-API-Key") == "secret-key")
+    #expect(captured?.value(forHTTPHeaderField: "Authorization") == nil)
+}
+
+@Test func authInterceptorUsesCustomShouldRefreshStatusCode() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    let authManager = CustomRefreshAuthManager()
+    let attemptCounter = AttemptCounter()
+
+    setHandler { request in
+        let currentAttempt = attemptCounter.increment()
+
+        if currentAttempt == 1 {
+            return (TestSupport.httpResponse(for: request, statusCode: 403), Data())
+        }
+
+        let response = Data("{\"user_name\":\"Ada\"}".utf8)
+        return (TestSupport.httpResponse(for: request, statusCode: 200), response)
+    }
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let manager = TestSupport.makeManager(authManager: authManager, decoder: decoder)
+
+    let user = try await manager.request(for: DefaultGetEndpoint(path: "protected"))
+    #expect(user.userName == "Ada")
+    #expect(await authManager.refreshCount == 1)
 }
 
 @Test func authInterceptorRefreshesAndRetriesOn401() async throws {

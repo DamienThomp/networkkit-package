@@ -161,23 +161,62 @@ let protobufData = try await client.requestData(for: GTFSRealtimeEndpoint())
 
 ## Authentication (optional)
 
-Pass an `AuthManagerProtocol` to attach bearer tokens and refresh on `401`:
+Pass an `AuthManagerProtocol` to attach credentials and optionally refresh when a response indicates auth failure.
+
+`AuthCredential` supports common header-based schemes:
 
 ```swift
-protocol MyAuthManager: AuthManagerProtocol {}
-
-let client = NetworkManagerFactory.makeDefaultClient(
-    hostResolver: hostResolver,
-    authManager: myAuthManager
-)
+AuthCredential.bearer("oauth-access-token")              // Authorization: Bearer …
+AuthCredential.token(scheme: "Discogs", token: "…")      // Authorization: Discogs token=…
+AuthCredential.header(field: "X-API-Key", value: "…")    // arbitrary header
 ```
 
-Implement:
+OAuth 1.0a request signing is not handled here — implement a custom `RequestInterceptor` for per-request signatures.
+
+### Bearer token with refresh (OAuth2-style)
 
 ```swift
 struct MyAuthManager: AuthManagerProtocol {
-    var accessToken: String? { get async { ... } }
-    func refreshAccessToken() async throws { ... }
+    var credential: AuthCredential? {
+        get async { .bearer(accessToken) }
+    }
+
+    func refreshCredentials() async throws {
+        // fetch a new access token
+    }
+}
+
+let client = NetworkManagerFactory.makeDefaultClient(
+    hostResolver: hostResolver,
+    authManager: MyAuthManager()
+)
+```
+
+By default, `shouldRefresh(for:)` returns `true` for HTTP `401`. Override it when an API uses a different status code or does not support refresh:
+
+```swift
+func shouldRefresh(for response: HTTPURLResponse) -> Bool {
+    response.statusCode == 401
+}
+```
+
+### Static token (no refresh)
+
+Discogs user tokens and similar credentials do not expire. Return the credential and disable refresh:
+
+```swift
+struct DiscogsAuthManager: AuthManagerProtocol {
+    let userToken: String
+
+    var credential: AuthCredential? {
+        get async { .token(scheme: "Discogs", token: userToken) }
+    }
+
+    func refreshCredentials() async throws {}
+
+    func shouldRefresh(for response: HTTPURLResponse) -> Bool {
+        false
+    }
 }
 ```
 

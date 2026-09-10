@@ -8,8 +8,15 @@
 import Foundation
 
 public protocol AuthManagerProtocol: Sendable {
-    var accessToken: String? { get async }
-    func refreshAccessToken() async throws
+    var credential: AuthCredential? { get async }
+    func refreshCredentials() async throws
+    func shouldRefresh(for response: HTTPURLResponse) -> Bool
+}
+
+public extension AuthManagerProtocol {
+    func shouldRefresh(for response: HTTPURLResponse) -> Bool {
+        response.statusCode == 401
+    }
 }
 
 public actor AuthInterceptor: RequestInterceptor {
@@ -22,25 +29,26 @@ public actor AuthInterceptor: RequestInterceptor {
     }
 
     public func adapt(_ request: inout URLRequest) async throws {
-        if let token = await authManager.accessToken {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let credential = await authManager.credential {
+            let header = credential.httpHeader
+            request.setValue(header.value, forHTTPHeaderField: header.field)
         }
     }
 
     public func retry(_ request: URLRequest, response: HTTPURLResponse?, data: Data?) async throws -> RetryResult {
-        guard let response, response.statusCode == 401 else {
+        guard let response, authManager.shouldRefresh(for: response) else {
             return .doNotRetry
         }
 
         do {
-            try await refreshToken()
+            try await refreshCredentials()
             return .retry
         } catch {
             throw NetworkError.unauthorized
         }
     }
 
-    private func refreshToken() async throws {
+    private func refreshCredentials() async throws {
         if let existingTask = refreshTask {
             try await existingTask.value
             return
@@ -48,7 +56,7 @@ public actor AuthInterceptor: RequestInterceptor {
 
         let task = Task {
             defer { refreshTask = nil }
-            try await authManager.refreshAccessToken()
+            try await authManager.refreshCredentials()
         }
 
         refreshTask = task
