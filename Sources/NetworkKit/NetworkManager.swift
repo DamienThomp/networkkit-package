@@ -16,6 +16,7 @@ public final class NetworkManager: NetworkManagerProtocol {
     private let validResponseCodes = 200...299
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let logger: NetworkLogging
 
     public init(
         hostResolver: @escaping @Sendable (APIHost) -> URL,
@@ -23,7 +24,14 @@ public final class NetworkManager: NetworkManagerProtocol {
         pipeline: InterceptorPipelineProtocol = InterceptorPipeline(),
         maxRetryCount: Int = 1,
         encoder: JSONEncoder = JSONEncoder(),
-        decoder: JSONDecoder = JSONDecoder()
+        decoder: JSONDecoder = JSONDecoder(),
+        logger: NetworkLogging = {
+            #if DEBUG
+            DebugNetworkLogger()
+            #else
+            NoOpNetworkLogger()
+            #endif
+        }()
     ) {
         self.hostResolver = hostResolver
         self.session = session
@@ -31,20 +39,31 @@ public final class NetworkManager: NetworkManagerProtocol {
         self.maxRetryCount = maxRetryCount
         self.encoder = encoder
         self.decoder = decoder
+        self.logger = logger
     }
 
     public func request<E: EndpointProtocol>(for endpoint: E) async throws -> E.Response {
-        let data = try await requestData(for: endpoint)
-        return try decodeResponse(data, as: E.self)
+        let response = try await execute(endpoint: endpoint, attempt: 0)
+        return try decodeResponse(
+            response.data,
+            as: E.self,
+            url: response.url,
+            statusCode: response.statusCode
+        )
     }
 
     public func requestData<E: EndpointProtocol>(for endpoint: E) async throws -> Data {
-        return try await execute(endpoint: endpoint, attempt: 0)
+        return try await execute(endpoint: endpoint, attempt: 0).data
     }
 
     // MARK: - Response decoding
 
-    private func decodeResponse<E: EndpointProtocol>(_ data: Data, as type: E.Type) throws -> E.Response {
+    private func decodeResponse<E: EndpointProtocol>(
+        _ data: Data,
+        as type: E.Type,
+        url: URL?,
+        statusCode: Int?
+    ) throws -> E.Response {
         if data.isEmpty {
             if let empty = EmptyResponse() as? E.Response {
                 return empty
@@ -54,25 +73,47 @@ public final class NetworkManager: NetworkManagerProtocol {
         do {
             return try decoder.decode(E.Response.self, from: data)
         } catch {
+            #if DEBUG
+            logger.log(
+                NetworkDecodingDebugSupport.decodingFailureMessage(
+                    endpoint: E.self,
+                    data: data,
+                    error: error,
+                    url: url,
+                    statusCode: statusCode
+                )
+            )
+            #endif
             throw NetworkError.decodingError(error)
         }
     }
 
     // MARK: - Request execution
 
-    private func execute<E: EndpointProtocol>(endpoint: E, attempt: Int) async throws -> Data {
+    private struct ExecutedResponse: Sendable {
+        let data: Data
+        let url: URL?
+        let statusCode: Int?
+    }
+
+    private func execute<E: EndpointProtocol>(endpoint: E, attempt: Int) async throws -> ExecutedResponse {
         try Task.checkCancellation()
 
         var request = try buildRequest(from: endpoint)
         try await pipeline.adapt(&request)
 
         let (data, httpResponse) = try await performDataTask(for: request)
-        return try await handleHTTPResponse(
+        let responseData = try await handleHTTPResponse(
             data: data,
             response: httpResponse,
             request: request,
             endpoint: endpoint,
             attempt: attempt
+        )
+        return ExecutedResponse(
+            data: responseData,
+            url: request.url,
+            statusCode: httpResponse.statusCode
         )
     }
 
@@ -120,7 +161,7 @@ public final class NetworkManager: NetworkManagerProtocol {
         )
 
         if shouldRetry {
-            return try await execute(endpoint: endpoint, attempt: attempt + 1)
+            return try await execute(endpoint: endpoint, attempt: attempt + 1).data
         }
 
         throw NetworkError.serverError(
