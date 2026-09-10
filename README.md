@@ -2,7 +2,7 @@
 
 Swift 6 concurrency-compliant networking library for modular iOS and macOS applications.
 
-NetworkKit is a reusable transport layer: it builds requests, executes them through an optional interceptor pipeline, and returns raw `Data` or decoded models. Decoding strategy, auth refresh, and multi-host routing are configurable per app.
+NetworkKit is a reusable transport layer: it builds requests, executes them through an optional interceptor pipeline, and returns raw `Data` or decoded models. Decoding strategy, auth refresh, multi-host routing, and debug logging are configurable per app.
 
 ## Requirements
 
@@ -259,6 +259,53 @@ let client = NetworkManagerFactory.makeDefaultClient(
 )
 ```
 
+## Debug logging
+
+In **DEBUG** builds, `NetworkManager` logs detailed context when JSON decoding fails. This helps diagnose model mismatches without attaching a proxy or adding one-off prints.
+
+By default:
+
+- **DEBUG** builds use `DebugNetworkLogger` (`os.Logger`, subsystem `NetworkKit`, category `Network`)
+- **Release** builds use `NoOpNetworkLogger` (no logging, no overhead)
+
+When decoding fails, the log includes:
+
+- Endpoint and expected response type
+- Request URL and HTTP status code
+- Response body (pretty-printed JSON when possible, otherwise a UTF-8 preview truncated at 4 KB)
+- A formatted `DecodingError` with the coding path (e.g. missing key, type mismatch)
+
+Example Console output:
+
+```
+Decoding failed
+Endpoint: GetUserEndpoint
+Expected: User
+URL: https://api.example.com/v1/users/42
+Status: 200
+Body (58 bytes):
+{
+  "created_at" : 1699999999,
+  "id" : 42
+}
+Error: Type mismatch: expected String at createdAt
+```
+
+### Custom logger
+
+Inject any type conforming to `NetworkLogging` when creating a `NetworkManager`:
+
+```swift
+let client = NetworkManager(
+    hostResolver: hostResolver,
+    logger: DebugNetworkLogger(subsystem: "com.example.app", category: "API")
+)
+```
+
+Use `NoOpNetworkLogger()` to silence logs even in DEBUG builds. Implement `NetworkLogging` in your app to route messages to your own logging system.
+
+`NetworkManagerFactory.makeDefaultClient` uses the same DEBUG/release default; construct `NetworkManager` directly when you need a custom logger.
+
 ## Error handling
 
 `NetworkError` cases:
@@ -269,7 +316,7 @@ let client = NetworkManagerFactory.makeDefaultClient(
 | `.taskCancelled` | Request was cancelled |
 | `.serverError(statusCode:data:response:)` | Non-2xx HTTP response |
 | `.emptyResponse` | Empty body when a decodable response was expected |
-| `.decodingError` | JSON decoding failed |
+| `.decodingError` | JSON decoding failed (see [Debug logging](#debug-logging) for response body details in DEBUG builds) |
 | `.encodingError` | Request body encoding failed |
 | `.transportError` | `URLError` from the transport layer |
 | `.unauthorized` | Token refresh failed after `401` |

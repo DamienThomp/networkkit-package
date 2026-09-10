@@ -150,6 +150,7 @@ private func resetMockState() {
     MockURLProtocol.requestHandler = nil
     MockURLProtocol.shouldHangUntilStopped = false
     CapturingInterceptor.lastRequest = nil
+    CapturingNetworkLogger.messages = []
 }
 
 // MARK: - Tests
@@ -264,6 +265,15 @@ struct NetworkKitTestSuite {
             return
         }
     }
+
+    #expect(CapturingNetworkLogger.messages.count == 1)
+    let log = try #require(CapturingNetworkLogger.messages.first)
+    #expect(log.contains("Decoding failed"))
+    #expect(log.contains("DefaultGetEndpoint"))
+    #expect(log.contains("UserResponse"))
+    #expect(log.contains("users/1"))
+    #expect(log.contains("Status: 200"))
+    #expect(log.contains("not-json"))
 }
 
 @Test func injectedEncoderAndDecoderStrategiesAreHonored() async throws {

@@ -45,6 +45,14 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+final class CapturingNetworkLogger: NetworkLogging, @unchecked Sendable {
+    nonisolated(unsafe) static var messages: [String] = []
+
+    func log(_ message: @autoclosure () -> String) {
+        Self.messages.append(message())
+    }
+}
+
 final class CapturingInterceptor: RequestInterceptor, @unchecked Sendable {
     nonisolated(unsafe) static var lastRequest: URLRequest?
 
@@ -68,7 +76,8 @@ enum TestSupport {
         customInterceptors: [RequestInterceptor] = [],
         encoder: JSONEncoder = JSONEncoder(),
         decoder: JSONDecoder = JSONDecoder(),
-        maxRetryCount: Int = 1
+        maxRetryCount: Int = 1,
+        logger: NetworkLogging = CapturingNetworkLogger()
     ) -> NetworkManager {
         var interceptors: [RequestInterceptor] = customInterceptors
 
@@ -89,7 +98,8 @@ enum TestSupport {
             pipeline: InterceptorPipeline(interceptors: interceptors),
             maxRetryCount: maxRetryCount,
             encoder: encoder,
-            decoder: decoder
+            decoder: decoder,
+            logger: logger
         )
     }
 
