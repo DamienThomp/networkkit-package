@@ -97,6 +97,32 @@ struct DeleteUserEndpoint: EndpointProtocol {
 _ = try await client.request(for: DeleteUserEndpoint(userID: "42"))
 ```
 
+### Response envelope (headers + decoded value)
+
+When the caller needs HTTP headers alongside the decoded body — pagination (`Link`), caching (`ETag`), etc. — use `response(for:)`:
+
+```swift
+let networkResponse = try await client.response(for: ListUsersEndpoint(page: 1))
+let users = networkResponse.value
+let nextPageURL = networkResponse.headers
+    .first { $0.key.caseInsensitiveCompare("Link") == .orderedSame }?
+    .value
+```
+
+`NetworkResponse` also includes `statusCode` and `url`. Header keys are preserved as returned by the server; lookup is case-insensitive per HTTP.
+
+For raw bytes with headers, use `responseData(for:)`:
+
+```swift
+let networkResponse = try await client.responseData(for: GTFSRealtimeEndpoint())
+let protobufData = networkResponse.value
+let etag = networkResponse.headers
+    .first { $0.key.caseInsensitiveCompare("ETag") == .orderedSame }?
+    .value
+```
+
+Existing `request(for:)` and `requestData(for:)` are unchanged.
+
 ## Request bodies
 
 ### JSON (`Encodable`)
@@ -241,6 +267,30 @@ Interceptors can:
 
 - **`adapt`**: mutate the outgoing request (headers, signing, logging)
 - **`retry`**: return `.retry` to re-run the request after a failed response
+- **`didReceive`**: observe every response (2xx included) before decoding
+
+### Response observation
+
+For cross-cutting side effects like rate-limit tracking, implement `didReceive` on a custom interceptor. It runs on every response — success, failure, and each retry attempt — and cannot fail the request:
+
+```swift
+struct RateLimitTracker: RequestInterceptor {
+    func adapt(_ request: inout URLRequest) async throws {}
+
+    func didReceive(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async {
+        guard let remaining = response.value(forHTTPHeaderField: "X-RateLimit-Remaining"),
+              let count = Int(remaining) else { return }
+        // update throttle state in your app
+    }
+}
+
+let client = NetworkManagerFactory.makeDefaultClient(
+    hostResolver: hostResolver,
+    customInterceptors: [RateLimitTracker()]
+)
+```
+
+NetworkKit surfaces raw headers; your app owns parsing and policy (thresholds, `Retry-After`, etc.).
 
 ## Encoder and decoder configuration
 

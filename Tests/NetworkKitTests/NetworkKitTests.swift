@@ -146,11 +146,16 @@ private func setHandler(
     MockURLProtocol.requestHandler = handler
 }
 
+private func headerValue(_ headers: [String: String], named name: String) -> String? {
+    headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+}
+
 private func resetMockState() {
     MockURLProtocol.requestHandler = nil
     MockURLProtocol.shouldHangUntilStopped = false
     CapturingInterceptor.lastRequest = nil
     CapturingNetworkLogger.messages = []
+    ObservingInterceptor.reset()
 }
 
 // MARK: - Tests
@@ -580,6 +585,174 @@ struct NetworkKitTestSuite {
 
     let manager = TestSupport.makeManager()
     _ = try await manager.request(for: SecondaryHostEndpoint())
+}
+
+@Test func didReceiveFiresOnSuccess() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    let observer = ObservingInterceptor()
+
+    setHandler { request in
+        let data = Data("{\"user_name\":\"Ada\"}".utf8)
+        let response = TestSupport.httpResponse(
+            for: request,
+            statusCode: 200,
+            headers: ["X-RateLimit-Remaining": "59"]
+        )
+        return (response, data)
+    }
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let manager = TestSupport.makeManager(
+        customInterceptors: [observer],
+        decoder: decoder
+    )
+
+    _ = try await manager.request(for: DefaultGetEndpoint(path: "users/1"))
+
+    #expect(ObservingInterceptor.observations.count == 1)
+    let observation = try #require(ObservingInterceptor.observations.first)
+    #expect(observation.statusCode == 200)
+    #expect(headerValue(observation.headers, named: "X-RateLimit-Remaining") == "59")
+}
+
+@Test func didReceiveFiresOnNonSuccessBeforeRetry() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    let observer = ObservingInterceptor()
+    let authManager = MockAuthManager()
+    let attemptCounter = AttemptCounter()
+
+    setHandler { request in
+        let currentAttempt = attemptCounter.increment()
+
+        if currentAttempt == 1 {
+            return (
+                TestSupport.httpResponse(
+                    for: request,
+                    statusCode: 401,
+                    headers: ["WWW-Authenticate": "Bearer"]
+                ),
+                Data()
+            )
+        }
+
+        let data = Data("{\"user_name\":\"Ada\"}".utf8)
+        return (
+            TestSupport.httpResponse(
+                for: request,
+                statusCode: 200,
+                headers: ["X-RateLimit-Remaining": "58"]
+            ),
+            data
+        )
+    }
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let manager = TestSupport.makeManager(
+        authManager: authManager,
+        customInterceptors: [observer],
+        decoder: decoder
+    )
+
+    _ = try await manager.request(for: DefaultGetEndpoint(path: "protected"))
+
+    #expect(ObservingInterceptor.observations.count == 2)
+    #expect(ObservingInterceptor.observations[0].statusCode == 401)
+    #expect(headerValue(ObservingInterceptor.observations[0].headers, named: "WWW-Authenticate") == "Bearer")
+    #expect(ObservingInterceptor.observations[1].statusCode == 200)
+    #expect(headerValue(ObservingInterceptor.observations[1].headers, named: "X-RateLimit-Remaining") == "58")
+}
+
+@Test func didReceiveFiresOnNonSuccessWithoutRetry() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    let observer = ObservingInterceptor()
+
+    setHandler { request in
+        (
+            TestSupport.httpResponse(
+                for: request,
+                statusCode: 404,
+                headers: ["X-Request-Id": "abc-123"]
+            ),
+            Data("{\"error\":\"not found\"}".utf8)
+        )
+    }
+
+    let manager = TestSupport.makeManager(
+        customInterceptors: [observer],
+        maxRetryCount: 0
+    )
+
+    do {
+        _ = try await manager.requestData(for: DefaultGetEndpoint(path: "missing"))
+        Issue.record("Expected serverError to be thrown")
+    } catch let error as NetworkError {
+        guard case .serverError = error else {
+            Issue.record("Expected serverError, got \(error)")
+            return
+        }
+    }
+
+    #expect(ObservingInterceptor.observations.count == 1)
+    let observation = try #require(ObservingInterceptor.observations.first)
+    #expect(observation.statusCode == 404)
+    #expect(headerValue(observation.headers, named: "X-Request-Id") == "abc-123")
+}
+
+@Test func responseForReturnsDecodedValueAndHeaders() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    setHandler { request in
+        let data = Data("{\"user_name\":\"Ada\"}".utf8)
+        let response = TestSupport.httpResponse(
+            for: request,
+            statusCode: 200,
+            headers: ["Link": "<https://api.example.com/users?page=2>; rel=\"next\""]
+        )
+        return (response, data)
+    }
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let manager = TestSupport.makeManager(decoder: decoder)
+
+    let networkResponse = try await manager.response(for: DefaultGetEndpoint(path: "users/1"))
+
+    #expect(networkResponse.value.userName == "Ada")
+    #expect(networkResponse.statusCode == 200)
+    #expect(networkResponse.url?.absoluteString == "https://api.example.com/users/1")
+    #expect(headerValue(networkResponse.headers, named: "Link") == "<https://api.example.com/users?page=2>; rel=\"next\"")
+}
+
+@Test func responseDataReturnsRawBytesAndHeaders() async throws {
+    resetMockState()
+    defer { resetMockState() }
+
+    let payload = Data([0x0A, 0x0B, 0x0C])
+
+    setHandler { request in
+        let response = TestSupport.httpResponse(
+            for: request,
+            statusCode: 200,
+            headers: ["ETag": "\"feed-v1\""]
+        )
+        return (response, payload)
+    }
+
+    let manager = TestSupport.makeManager()
+    let networkResponse = try await manager.responseData(for: ProtobufGetEndpoint())
+
+    #expect(networkResponse.value == payload)
+    #expect(networkResponse.statusCode == 200)
+    #expect(headerValue(networkResponse.headers, named: "ETag") == "\"feed-v1\"")
 }
 
 }
