@@ -146,8 +146,10 @@ private func setHandler(
     MockURLProtocol.requestHandler = handler
 }
 
-private func headerValue(_ headers: [String: String], named name: String) -> String? {
-    headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+private extension Dictionary where Key == String, Value == String {
+    func header(named name: String) -> String? {
+        first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
 }
 
 private func resetMockState() {
@@ -216,15 +218,10 @@ struct NetworkKitTestSuite {
 
     let manager = TestSupport.makeManager()
 
-    do {
+    let error = try await #require(throws: NetworkError.self) {
         _ = try await manager.request(for: DefaultGetEndpoint(path: "users/1"))
-        Issue.record("Expected emptyResponse to be thrown")
-    } catch let error as NetworkError {
-        guard case .emptyResponse = error else {
-            Issue.record("Expected emptyResponse, got \(error)")
-            return
-        }
     }
+    #expect({ if case .emptyResponse = error { true } else { false } }())
 }
 
 @Test func nonSuccessStatusMapsToServerError() async throws {
@@ -238,16 +235,14 @@ struct NetworkKitTestSuite {
 
     let manager = TestSupport.makeManager(maxRetryCount: 0)
 
-    do {
+    let error = try await #require(throws: NetworkError.self) {
         _ = try await manager.requestData(for: DefaultGetEndpoint(path: "missing"))
-        Issue.record("Expected serverError to be thrown")
-    } catch let error as NetworkError {
-        guard case .serverError(let statusCode, let data, _) = error else {
-            Issue.record("Expected serverError, got \(error)")
-            return
-        }
+    }
+    if case .serverError(let statusCode, let data, _) = error {
         #expect(statusCode == 404)
         #expect(data == errorBody)
+    } else {
+        #expect(Bool(false), "Expected serverError, got \(error)")
     }
 }
 
@@ -261,15 +256,10 @@ struct NetworkKitTestSuite {
 
     let manager = TestSupport.makeManager()
 
-    do {
+    let error = try await #require(throws: NetworkError.self) {
         _ = try await manager.request(for: DefaultGetEndpoint(path: "users/1"))
-        Issue.record("Expected decodingError to be thrown")
-    } catch let error as NetworkError {
-        guard case .decodingError = error else {
-            Issue.record("Expected decodingError, got \(error)")
-            return
-        }
     }
+    #expect({ if case .decodingError = error { true } else { false } }())
 
     #expect(CapturingNetworkLogger.messages.count == 1)
     let log = try #require(CapturingNetworkLogger.messages.first)
@@ -512,15 +502,10 @@ struct NetworkKitTestSuite {
 
     let manager = TestSupport.makeManager(authManager: authManager, maxRetryCount: 1)
 
-    do {
+    let error = try await #require(throws: NetworkError.self) {
         _ = try await manager.requestData(for: DefaultGetEndpoint(path: "protected"))
-        Issue.record("Expected unauthorized to be thrown")
-    } catch let error as NetworkError {
-        guard case .unauthorized = error else {
-            Issue.record("Expected unauthorized, got \(error)")
-            return
-        }
     }
+    #expect({ if case .unauthorized = error { true } else { false } }())
 }
 
 @Test func cancellationMapsToTaskCancelled() async throws {
@@ -541,16 +526,13 @@ struct NetworkKitTestSuite {
 
     do {
         _ = try await task.value
-        Issue.record("Expected cancellation error to be thrown")
+        #expect(Bool(false), "Expected cancellation error to be thrown")
     } catch is CancellationError {
         return
     } catch let error as NetworkError {
-        guard case .taskCancelled = error else {
-            Issue.record("Expected taskCancelled, got \(error)")
-            return
-        }
+        #expect({ if case .taskCancelled = error { true } else { false } }(), "Expected taskCancelled, got \(error)")
     } catch {
-        Issue.record("Unexpected error: \(error)")
+        #expect(Bool(false), "Unexpected error: \(error)")
     }
 }
 
@@ -615,7 +597,7 @@ struct NetworkKitTestSuite {
     #expect(ObservingInterceptor.observations.count == 1)
     let observation = try #require(ObservingInterceptor.observations.first)
     #expect(observation.statusCode == 200)
-    #expect(headerValue(observation.headers, named: "X-RateLimit-Remaining") == "59")
+    #expect(observation.headers.header(named: "X-RateLimit-Remaining") == "59")
 }
 
 @Test func didReceiveFiresOnNonSuccessBeforeRetry() async throws {
@@ -663,9 +645,9 @@ struct NetworkKitTestSuite {
 
     #expect(ObservingInterceptor.observations.count == 2)
     #expect(ObservingInterceptor.observations[0].statusCode == 401)
-    #expect(headerValue(ObservingInterceptor.observations[0].headers, named: "WWW-Authenticate") == "Bearer")
+    #expect(ObservingInterceptor.observations[0].headers.header(named: "WWW-Authenticate") == "Bearer")
     #expect(ObservingInterceptor.observations[1].statusCode == 200)
-    #expect(headerValue(ObservingInterceptor.observations[1].headers, named: "X-RateLimit-Remaining") == "58")
+    #expect(ObservingInterceptor.observations[1].headers.header(named: "X-RateLimit-Remaining") == "58")
 }
 
 @Test func didReceiveFiresOnNonSuccessWithoutRetry() async throws {
@@ -690,20 +672,15 @@ struct NetworkKitTestSuite {
         maxRetryCount: 0
     )
 
-    do {
+    let error = try await #require(throws: NetworkError.self) {
         _ = try await manager.requestData(for: DefaultGetEndpoint(path: "missing"))
-        Issue.record("Expected serverError to be thrown")
-    } catch let error as NetworkError {
-        guard case .serverError = error else {
-            Issue.record("Expected serverError, got \(error)")
-            return
-        }
     }
+    #expect({ if case .serverError = error { true } else { false } }())
 
     #expect(ObservingInterceptor.observations.count == 1)
     let observation = try #require(ObservingInterceptor.observations.first)
     #expect(observation.statusCode == 404)
-    #expect(headerValue(observation.headers, named: "X-Request-Id") == "abc-123")
+    #expect(observation.headers.header(named: "X-Request-Id") == "abc-123")
 }
 
 @Test func responseForReturnsDecodedValueAndHeaders() async throws {
@@ -729,7 +706,7 @@ struct NetworkKitTestSuite {
     #expect(networkResponse.value.userName == "Ada")
     #expect(networkResponse.statusCode == 200)
     #expect(networkResponse.url?.absoluteString == "https://api.example.com/users/1")
-    #expect(headerValue(networkResponse.headers, named: "Link") == "<https://api.example.com/users?page=2>; rel=\"next\"")
+    #expect(networkResponse.header(named: "Link") == "<https://api.example.com/users?page=2>; rel=\"next\"")
 }
 
 @Test func responseDataReturnsRawBytesAndHeaders() async throws {
@@ -752,7 +729,7 @@ struct NetworkKitTestSuite {
 
     #expect(networkResponse.value == payload)
     #expect(networkResponse.statusCode == 200)
-    #expect(headerValue(networkResponse.headers, named: "ETag") == "\"feed-v1\"")
+    #expect(networkResponse.header(named: "ETag") == "\"feed-v1\"")
 }
 
 }

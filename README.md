@@ -104,21 +104,17 @@ When the caller needs HTTP headers alongside the decoded body — pagination (`L
 ```swift
 let networkResponse = try await client.response(for: ListUsersEndpoint(page: 1))
 let users = networkResponse.value
-let nextPageURL = networkResponse.headers
-    .first { $0.key.caseInsensitiveCompare("Link") == .orderedSame }?
-    .value
+let linkHeader = networkResponse.header(named: "Link")
 ```
 
-`NetworkResponse` also includes `statusCode` and `url`. Header keys are preserved as returned by the server; lookup is case-insensitive per HTTP.
+`NetworkResponse` also includes `statusCode` and `url`. Use `header(named:)` for case-insensitive header lookup.
 
 For raw bytes with headers, use `responseData(for:)`:
 
 ```swift
 let networkResponse = try await client.responseData(for: GTFSRealtimeEndpoint())
 let protobufData = networkResponse.value
-let etag = networkResponse.headers
-    .first { $0.key.caseInsensitiveCompare("ETag") == .orderedSame }?
-    .value
+let etag = networkResponse.header(named: "ETag")
 ```
 
 Existing `request(for:)` and `requestData(for:)` are unchanged.

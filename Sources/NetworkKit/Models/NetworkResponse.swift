@@ -19,4 +19,9 @@ public struct NetworkResponse<Value: Sendable>: Sendable {
         self.headers = headers
         self.url = url
     }
+
+    /// Returns the first header value for `name`, compared case-insensitively per HTTP.
+    public func header(named name: String) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
 }
