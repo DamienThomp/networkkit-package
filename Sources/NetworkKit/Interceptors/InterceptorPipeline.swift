@@ -9,6 +9,7 @@ import Foundation
 
 public protocol InterceptorPipelineProtocol: Sendable {
     func adapt(_ request: inout URLRequest) async throws
+    func didReceive(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async
     func shouldRetry(
         _ request: URLRequest,
         response: HTTPURLResponse?,
@@ -28,6 +29,12 @@ public final class InterceptorPipeline: InterceptorPipelineProtocol {
     public func adapt(_ request: inout URLRequest) async throws {
         for interceptor in interceptors {
             try await interceptor.adapt(&request)
+        }
+    }
+
+    public func didReceive(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async {
+        for interceptor in interceptors {
+            await interceptor.didReceive(response, data: data, for: request)
         }
     }
 

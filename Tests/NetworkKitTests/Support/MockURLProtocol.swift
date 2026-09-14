@@ -61,6 +61,37 @@ final class CapturingInterceptor: RequestInterceptor, @unchecked Sendable {
     }
 }
 
+struct ObservedResponse: Sendable {
+    let statusCode: Int
+    let headers: [String: String]
+    let data: Data
+    let requestURL: URL?
+}
+
+final class ObservingInterceptor: RequestInterceptor, @unchecked Sendable {
+    nonisolated(unsafe) static var observations: [ObservedResponse] = []
+
+    func adapt(_ request: inout URLRequest) async throws {}
+
+    func didReceive(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async {
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+            guard let key = pair.key as? String, let value = pair.value as? String else { return }
+            result[key] = value
+        }
+        let observation = ObservedResponse(
+            statusCode: response.statusCode,
+            headers: headers,
+            data: data,
+            requestURL: request.url
+        )
+        Self.observations.append(observation)
+    }
+
+    static func reset() {
+        observations = []
+    }
+}
+
 enum TestSupport {
     static let defaultBaseURL = URL(string: "https://api.example.com")!
 

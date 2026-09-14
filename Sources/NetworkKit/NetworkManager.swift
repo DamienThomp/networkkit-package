@@ -56,6 +56,32 @@ public final class NetworkManager: NetworkManagerProtocol {
         return try await execute(endpoint: endpoint, attempt: 0).data
     }
 
+    public func response<E: EndpointProtocol>(for endpoint: E) async throws -> NetworkResponse<E.Response> {
+        let executed = try await execute(endpoint: endpoint, attempt: 0)
+        let value = try decodeResponse(
+            executed.data,
+            as: E.self,
+            url: executed.url,
+            statusCode: executed.statusCode
+        )
+        return NetworkResponse(
+            value: value,
+            statusCode: executed.statusCode ?? -1,
+            headers: executed.headers,
+            url: executed.url
+        )
+    }
+
+    public func responseData<E: EndpointProtocol>(for endpoint: E) async throws -> NetworkResponse<Data> {
+        let executed = try await execute(endpoint: endpoint, attempt: 0)
+        return NetworkResponse(
+            value: executed.data,
+            statusCode: executed.statusCode ?? -1,
+            headers: executed.headers,
+            url: executed.url
+        )
+    }
+
     // MARK: - Response decoding
 
     private func decodeResponse<E: EndpointProtocol>(
@@ -94,6 +120,7 @@ public final class NetworkManager: NetworkManagerProtocol {
         let data: Data
         let url: URL?
         let statusCode: Int?
+        let headers: [String: String]
     }
 
     private func execute<E: EndpointProtocol>(endpoint: E, attempt: Int) async throws -> ExecutedResponse {
@@ -103,17 +130,33 @@ public final class NetworkManager: NetworkManagerProtocol {
         try await pipeline.adapt(&request)
 
         let (data, httpResponse) = try await performDataTask(for: request)
-        let responseData = try await handleHTTPResponse(
-            data: data,
+        await pipeline.didReceive(httpResponse, data: data, for: request)
+
+        if validResponseCodes.contains(httpResponse.statusCode) {
+            return ExecutedResponse(
+                data: data,
+                url: request.url,
+                statusCode: httpResponse.statusCode,
+                headers: extractHeaders(from: httpResponse)
+            )
+        }
+
+        let shouldRetry = try await pipeline.shouldRetry(
+            request,
             response: httpResponse,
-            request: request,
-            endpoint: endpoint,
-            attempt: attempt
+            data: data,
+            attempt: attempt,
+            maxRetries: maxRetryCount
         )
-        return ExecutedResponse(
-            data: responseData,
-            url: request.url,
-            statusCode: httpResponse.statusCode
+
+        if shouldRetry {
+            return try await execute(endpoint: endpoint, attempt: attempt + 1)
+        }
+
+        throw NetworkError.serverError(
+            statusCode: httpResponse.statusCode,
+            data: data,
+            response: httpResponse
         )
     }
 
@@ -139,36 +182,6 @@ public final class NetworkManager: NetworkManagerProtocol {
         }
 
         return (data, httpResponse)
-    }
-
-    private func handleHTTPResponse<E: EndpointProtocol>(
-        data: Data,
-        response: HTTPURLResponse,
-        request: URLRequest,
-        endpoint: E,
-        attempt: Int
-    ) async throws -> Data {
-        if validResponseCodes.contains(response.statusCode) {
-            return data
-        }
-
-        let shouldRetry = try await pipeline.shouldRetry(
-            request,
-            response: response,
-            data: data,
-            attempt: attempt,
-            maxRetries: maxRetryCount
-        )
-
-        if shouldRetry {
-            return try await execute(endpoint: endpoint, attempt: attempt + 1).data
-        }
-
-        throw NetworkError.serverError(
-            statusCode: response.statusCode,
-            data: data,
-            response: response
-        )
     }
 
     // MARK: - Request building
@@ -224,5 +237,12 @@ public final class NetworkManager: NetworkManagerProtocol {
 
     private func applyHeaders<E: EndpointProtocol>(to request: inout URLRequest, from endpoint: E) {
         endpoint.headers?.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+    }
+
+    private func extractHeaders(from response: HTTPURLResponse) -> [String: String] {
+        response.allHeaderFields.reduce(into: [:]) { result, pair in
+            guard let key = pair.key as? String, let value = pair.value as? String else { return }
+            result[key] = value
+        }
     }
 }
