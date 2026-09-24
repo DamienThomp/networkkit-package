@@ -2,7 +2,7 @@
 
 Swift 6 concurrency-compliant networking library for modular iOS and macOS applications.
 
-NetworkKit is a reusable transport layer: it builds requests, executes them through an optional interceptor pipeline, and returns raw `Data` or decoded models. Decoding strategy, auth refresh, multi-host routing, and debug logging are configurable per app.
+NetworkKit is a reusable transport layer: it builds requests, executes them through an optional interceptor pipeline, and returns raw `Data` or decoded models. Decoding strategy, auth refresh, multi-host routing, and debug logging are configurable per app. Interceptor conformance follows Swift concurrency guidelines — see [Concurrency](#concurrency) below.
 
 ## Requirements
 
@@ -265,9 +265,17 @@ Interceptors can:
 - **`retry`**: return `.retry` to re-run the request after a failed response
 - **`didReceive`**: observe every response (2xx included) before decoding
 
+### Concurrency
+
+`RequestInterceptor` conforms to `Sendable`. Interceptors run **sequentially in registration order** for each request, but **concurrent requests** can run their pipelines in parallel.
+
+- **Stateless interceptors** (logging, headers): prefer a `struct`.
+- **Shared mutable state** (token refresh, rate-limit counters): use an `actor`, like the built-in `AuthInterceptor`.
+- Avoid `@unchecked Sendable` unless you can prove thread safety yourself.
+
 ### Response observation
 
-For cross-cutting side effects like rate-limit tracking, implement `didReceive` on a custom interceptor. It runs on every response — success, failure, and each retry attempt — and cannot fail the request:
+For cross-cutting side effects like rate-limit tracking, implement `didReceive` on a custom interceptor. It runs on every response — success, failure, and each retry attempt — and cannot fail the request. If the tracker holds shared mutable state, implement it as an `actor` rather than a `struct`:
 
 ```swift
 struct RateLimitTracker: RequestInterceptor {
@@ -276,7 +284,7 @@ struct RateLimitTracker: RequestInterceptor {
     func didReceive(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async {
         guard let remaining = response.value(forHTTPHeaderField: "X-RateLimit-Remaining"),
               let count = Int(remaining) else { return }
-        // update throttle state in your app
+        // update throttle state (use an actor if this state is shared)
     }
 }
 
